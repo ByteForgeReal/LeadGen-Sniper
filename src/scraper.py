@@ -1,183 +1,294 @@
+"""
+scraper.py - Core Google Maps scraper using Playwright (async)
+"""
+
 import asyncio
-from playwright.async_api import async_playwright
-from rich.progress import Progress
-from parser import DataParser
 import json
-import os
+import re
+from pathlib import Path
 
-class MapsScraper:
-    def __init__(self, headless=True):
-        self.headless = headless
-        self.config = self._load_config()
+from playwright.async_api import async_playwright, Page, BrowserContext, TimeoutError as PlaywrightTimeout
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
-    def _load_config(self):
-        config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                return json.load(f)
-        return {"headless": True, "scroll_attempts": 5, "wait_time": 2}
+console = Console()
 
-    async def _scroll_feed(self, page):
-        """Scrolls the Google Maps results feed to load more listings."""
+# Find config.json — works whether flat in src/ or one level up
+def _find_config() -> Path:
+    here = Path(__file__).parent
+    for candidate in [here / "config.json", here.parent / "config.json"]:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError("config.json not found next to scraper.py or one folder up.")
+
+with open(_find_config()) as f:
+    CONFIG = json.load(f)
+
+
+# ── Coordinate extraction ────────────────────────────────────────────────────
+
+_COORD_RE = re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)")
+_CENTER_RE = re.compile(r"center=(-?\d+\.\d+),(-?\d+\.\d+)")
+
+
+async def get_coords(page: Page):
+    """
+    Poll the address bar URL for up to 4 seconds waiting for Maps JS to
+    inject @lat,lng. Falls back to og:image and canonical tag if it never
+    appears in the URL.
+    """
+    # Poll the address bar — Maps JS writes coords here within 1-3s of load
+    for _ in range(8):
+        m = _COORD_RE.search(page.url)
+        if m:
+            return m.group(1), m.group(2)
+        await asyncio.sleep(0.5)
+
+    # Fallback A: og:image static-map thumbnail → center=lat,lng
+    try:
+        og = await page.get_attribute('meta[property="og:image"]', "content") or ""
+        m = _CENTER_RE.search(og) or _COORD_RE.search(og)
+        if m:
+            return m.group(1), m.group(2)
+    except Exception:
+        pass
+
+    # Fallback B: canonical link tag
+    try:
+        c = await page.get_attribute('link[rel="canonical"]', "href") or ""
+        m = _COORD_RE.search(c)
+        if m:
+            return m.group(1), m.group(2)
+    except Exception:
+        pass
+
+    return None, None
+
+
+async def build_maps_url(page: Page, fallback_url: str) -> str:
+    """
+    Build a universal Google Maps URL using ?q=lat,lng format.
+    Works in every browser, Excel, and mobile without encoding issues.
+    Example: https://maps.google.com/?q=30.2003,-97.8003
+    """
+    lat, lng = await get_coords(page)
+    if lat and lng:
+        return f"https://maps.google.com/?q={lat},{lng}"
+    # Fallback: place name search (no coords available)
+    place_match = re.search(r"/maps/place/([^/@?#]+)", page.url or fallback_url)
+    place_name  = place_match.group(1) if place_match else "place"
+    return f"https://maps.google.com/?q={place_name}"
+
+
+# ── Scroll ───────────────────────────────────────────────────────────────────
+
+async def scroll_results(page: Page, max_results: int, progress, task) -> list:
+    scroll_attempts = 0
+    last_count      = 0
+    stale_count     = 0
+
+    while scroll_attempts < CONFIG["max_scroll_attempts"]:
+        cards         = await page.query_selector_all('a[href*="/maps/place/"]')
+        current_count = len(cards)
+
+        progress.update(task, completed=min(current_count, max_results),
+                        description=f"[cyan]🗺  Scrolling... {current_count} listings found")
+
+        if current_count >= max_results:
+            break
+        if await page.query_selector('span.HlvSq'):
+            break
+        if current_count == last_count:
+            stale_count += 1
+            if stale_count >= 4:
+                break
+        else:
+            stale_count = 0
+
+        last_count = current_count
+
         try:
-            feed = page.locator('div[role="feed"]')
-            if await feed.is_visible():
-                await feed.evaluate("el => el.scrollBy(0, 2000)")
-                await asyncio.sleep(self.config.get("wait_time", 2))
-        except:
+            panel = await page.query_selector('div[role="feed"]')
+            if panel:
+                await panel.evaluate("el => el.scrollBy(0, 800)")
+            else:
+                await page.mouse.wheel(0, 800)
+        except Exception:
+            await page.mouse.wheel(0, 800)
+
+        await asyncio.sleep(CONFIG["scroll_pause"])
+        scroll_attempts += 1
+
+    return await page.query_selector_all('a[href*="/maps/place/"]')
+
+
+# ── Detail extractor ─────────────────────────────────────────────────────────
+
+async def extract_listing_detail(page: Page, url: str) -> dict:
+    data = {
+        "Business Name":     "",
+        "Rating":            "",
+        "Number of Reviews": "",
+        "Phone Number":      "",
+        "Address":           "",
+        "Open in Maps":      "",
+    }
+
+    try:
+        # domcontentloaded — fast, never hangs on Google Maps
+        await page.goto(url, wait_until="domcontentloaded", timeout=CONFIG["timeout"])
+
+        # Wait for the h1 business name — signals the info panel is rendered
+        try:
+            await page.wait_for_selector(
+                'h1.DUwDvf, h1[class*="fontHeadlineLarge"]',
+                timeout=8000
+            )
+        except PlaywrightTimeout:
+            pass  # panel slow — extract whatever loaded
+
+        # build_maps_url polls until @lat,lng appears in URL (up to 4s)
+        data["Open in Maps"] = await build_maps_url(page, url)
+
+        # Business Name
+        try:
+            el = await page.query_selector('h1.DUwDvf, h1[class*="fontHeadlineLarge"]')
+            if el:
+                data["Business Name"] = (await el.inner_text()).strip()
+        except Exception:
             pass
 
-    async def scrape_locations(self, niche, location, max_results):
-        """Main scraping loop with Deep Crawl logic."""
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                locale="en-US"
+        # Rating
+        try:
+            el = await page.query_selector('div.F7nice span[aria-hidden="true"]')
+            if el:
+                data["Rating"] = (await el.inner_text()).strip()
+        except Exception:
+            pass
+
+        # Reviews
+        try:
+            el = await page.query_selector('div.F7nice span[aria-label*="review"]')
+            if el:
+                label = await el.get_attribute("aria-label")
+                m = re.search(r"([\d,]+)", label or "")
+                if m:
+                    data["Number of Reviews"] = m.group(1).replace(",", "")
+        except Exception:
+            pass
+
+        # Address & Phone
+        try:
+            for btn in await page.query_selector_all('button[data-item-id], a[data-item-id]'):
+                item_id = await btn.get_attribute("data-item-id") or ""
+                aria    = await btn.get_attribute("aria-label") or ""
+                text    = (await btn.inner_text()).strip()
+                if "address" in item_id.lower() and not data["Address"]:
+                    data["Address"] = text or aria.replace("Address: ", "")
+                elif "phone" in item_id.lower() and not data["Phone Number"]:
+                    data["Phone Number"] = text or aria.replace("Phone: ", "")
+        except Exception:
+            pass
+
+        # Fallback phone
+        if not data["Phone Number"]:
+            try:
+                body = await page.inner_text("body")
+                m = re.search(r"\(?\d{3}\)?[\s\-\.]\d{3}[\s\-\.]\d{4}", body)
+                if m:
+                    data["Phone Number"] = m.group(0)
+            except Exception:
+                pass
+
+    except PlaywrightTimeout:
+        console.print(f"[red]✗ Hard timeout, skipping: {url[:55]}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {url[:55]} — {e}[/red]")
+
+    return data
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+async def run_scraper(niche: str, location: str, max_results: int) -> list[dict]:
+    query      = f"{niche} in {location}"
+    search_url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+
+    console.print(f"\n[bold cyan]🔍 Searching:[/bold cyan] [white]{query}[/white]")
+    console.print(f"[bold cyan]🎯 Max results:[/bold cyan] [white]{max_results}[/white]\n")
+
+    leads = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=CONFIG["headless"])
+        context: BrowserContext = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
             )
-            page = await context.new_page()
-            
-            search_query = f"{niche} in {location}"
-            print(f"[*] Searching for: {search_query}")
-            
-            await page.goto("https://www.google.com/maps", wait_until="load")
-            
-            # Consent handling (More robust)
+        )
+        page = await context.new_page()
+
+        try:
+            console.print("[dim]Opening Google Maps...[/dim]")
+            # domcontentloaded for the search page too — never networkidle on Maps
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=CONFIG["timeout"])
+
+            # Wait for the sidebar feed to appear
             try:
-                consent_selectors = [
-                    'button[aria-label="Accept all"]', 
-                    'button:has-text("Accept all")', 
-                    'button:has-text("I agree")',
-                    'button:has-text("Agree")',
-                    'form[action*="consent"] button'
-                ]
-                for selector in consent_selectors:
-                    btn = page.locator(selector).first
-                    if await btn.is_visible(timeout=3000):
-                        await btn.click()
-                        await asyncio.sleep(1)
-                        break
-            except: pass
+                await page.wait_for_selector('div[role="feed"]', timeout=10000)
+            except PlaywrightTimeout:
+                pass
 
-            results = []
-            seen_names = set()
-            
+            await asyncio.sleep(1.5)
+
             try:
-                # Wait for search box using multiple common selectors
-                selectors = [
-                    'input[id="searchboxinput"]',
-                    'input[aria-label*="Search"]',
-                    'input[name="q"]',
-                    '#searchboxinput'
-                ]
-                
-                search_box = None
-                for selector in selectors:
-                    loc = page.locator(selector).first
-                    if await loc.is_visible(timeout=5000):
-                        search_box = loc
+                accept_btn = await page.query_selector('button[aria-label*="Accept"], form button')
+                if accept_btn:
+                    await accept_btn.click()
+                    await asyncio.sleep(0.8)
+            except Exception:
+                pass
+
+            # Scroll phase
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                          BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                          TimeElapsedColumn(), console=console) as progress:
+                scroll_task = progress.add_task("[cyan]Scrolling listings...", total=max_results)
+                listing_els = await scroll_results(page, max_results, progress, scroll_task)
+                progress.update(scroll_task, completed=max_results)
+
+            urls, seen = [], set()
+            for el in listing_els:
+                href = await el.get_attribute("href")
+                if href and href not in seen and "/maps/place/" in href:
+                    seen.add(href)
+                    urls.append(href)
+                    if len(urls) >= max_results:
                         break
-                
-                if not search_box:
-                    print("[!] Waiting for search box...")
-                    await asyncio.sleep(2)
-                    # Last ditch effort
-                    search_box = page.locator('input[id="searchboxinput"]')
 
-                if await search_box.is_visible():
-                    await search_box.fill(search_query)
-                    await page.keyboard.press("Enter")
-                    print(f"[*] Search submitted. Waiting for results...")
-                else:
-                    raise Exception("Search box exists but is not interactable.")
-                
-                # Wait for results to appear (try multiple common result selectors)
-                result_selectors = ['div[role="article"]', 'a.hfpxzc', 'div[role="feed"]']
-                found_results = False
-                
-                print("[*] Waiting for results list to load...")
-                for selector in result_selectors:
-                    try:
-                        await page.wait_for_selector(selector, timeout=10000)
-                        found_results = True
-                        break
-                    except:
-                        continue
-                
-                if not found_results:
-                    print("[!] No results list found. Attempting a short scroll to trigger load...")
-                    await page.mouse.wheel(0, 1000)
-                    await asyncio.sleep(2)
+            console.print(f"\n[green]Found {len(urls)} listings. Extracting...[/green]\n")
 
-                # Identify listing elements (using multiple common selectors for robustness)
-                selectors_listing = ['div[role="article"]', 'a.hfpxzc', 'div.m67q60', 'div[aria-label^="Results for"]']
-                
-                with Progress() as progress:
-                    task = progress.add_task("[cyan]High-Intel Scraping...", total=max_results)
-                    
-                    retry_count = 0
-                    while len(results) < max_results and retry_count < 5:
-                        await self._scroll_feed(page)
-                        
-                        listing_elements = []
-                        for sel in selectors_listing:
-                            listing_elements = await page.locator(sel).all()
-                            if listing_elements: break
-                        
-                        if not listing_elements:
-                            retry_count += 1
-                            await asyncio.sleep(1)
-                            continue
+            # Extract phase
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                          BarColumn(), TextColumn("{task.completed}/{task.total}"),
+                          TimeElapsedColumn(), console=console) as progress:
+                task = progress.add_task("[cyan]Extracting...", total=len(urls))
 
-                        initial_count = len(results)
-                        for el in listing_elements:
-                            if len(results) >= max_results: break
-                                
-                            # Extract name for deduplication
-                            name = await el.get_attribute("aria-label")
-                            if not name:
-                                # Try link text if aria-label is missing
-                                name = await el.inner_text()
-                                if "\n" in name: name = name.split("\n")[0]
-                            
-                            if name and name not in seen_names:
-                                # DEEP CRAWL: Click listing to see details
-                                try:
-                                    await el.click()
-                                    await asyncio.sleep(1.5) # Wait for panel slide-in
-                                    
-                                    # Parse from the detailed side panel
-                                    side_panel = page.locator('div[role="main"]').first
-                                    data = await DataParser.parse_listing(side_panel)
-                                    
-                                    if data:
-                                        # Use the name from listing if panel name fails or is "N/A"
-                                        if data.get('name') == "N/A": 
-                                            data['name'] = name
-                                        
-                                        # Deduplicate again with cleaned name
-                                        if data['name'] not in seen_names:
-                                            results.append(data)
-                                            seen_names.add(data['name'])
-                                            progress.update(task, advance=1)
-                                    else:
-                                        # If side panel parse fails (maybe "Results" header), skip it
-                                        seen_names.add(name)
-                                except Exception as e:
-                                    # Fallback if click fails
-                                    data = await DataParser.parse_listing(el)
-                                    if data:
-                                        results.append(data)
-                                        seen_names.add(name)
-                                        progress.update(task, advance=1)
-                        
-                        if len(results) == initial_count: break
+                for i, url in enumerate(urls):
+                    progress.update(task, description=f"[cyan]Extracting ({i+1}/{len(urls)})...")
+                    data = await extract_listing_detail(page, url)
+                    if data["Business Name"]:
+                        leads.append(data)
+                    progress.advance(task)
+                    await asyncio.sleep(CONFIG["rate_limit_delay"])
 
-                await browser.close()
-                return results
+        except Exception as e:
+            console.print(f"[bold red]Fatal: {e}[/bold red]")
+            raise
+        finally:
+            await browser.close()
 
-            except Exception as e:
-                print(f"[!] Scrape error: {e}")
-                await browser.close()
-                return []
+    return leads

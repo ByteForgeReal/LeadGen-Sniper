@@ -1,98 +1,83 @@
+"""
+parser.py - Extracts structured business data from Google Maps listing elements
+"""
+
 import re
-from playwright.async_api import Locator
+from typing import Optional
 
-class DataParser:
-    @staticmethod
-    async def parse_listing(element: Locator):
-        """
-        Extracts high-fidelity data from a detailed Google Maps listing panel.
-        """
-        try:
-            # Full text content of the panel
-            text_content = await element.inner_text()
-            lines = text_content.split('\n')
-            
-            # Name extraction from the panel header
-            name = "N/A"
-            try:
-                # Panel headers often use h1 or specific font size
-                header = element.locator('h1').first
-                if await header.is_visible(timeout=500):
-                    extracted_name = await header.inner_text()
-                    # Skip common "Results" headers in different languages
-                    if extracted_name.strip() in ["Results", "תוצאות", "Showing results"]:
-                        return None
-                    name = extracted_name
-            except:
-                pass
 
-            # Rating and Reviews
-            rating = 0.0
-            reviews = 0
-            # Common pattern: "4.5 stars (120 reviews)"
-            rating_match = re.search(r"([\d\.]+)\s?stars?\s?\(?([\d,]+)\)?", text_content, re.IGNORECASE)
-            if rating_match:
-                try:
-                    rating = float(rating_match.group(1))
-                    reviews_str = rating_match.group(2).replace(',', '')
-                    reviews = int(reviews_str)
-                except: pass
+def parse_business_card(card_text: str, url: str = "") -> dict:
+    """
+    Parse raw text from a Google Maps business card into structured data.
+    Returns a dict with all lead fields.
+    """
+    lines = [line.strip() for line in card_text.strip().splitlines() if line.strip()]
 
-            # Detailed Distance if available
-            distance = "N/A"
-            distance_km = 999.0
-            dist_match = re.search(r"([\d\.]+)\s?(km|m|miles|mi)\b", text_content, re.IGNORECASE)
-            if dist_match:
-                distance = dist_match.group(0)
-                try:
-                    val = float(dist_match.group(1))
-                    unit = dist_match.group(2).lower()
-                    if unit == 'm': distance_km = val / 1000
-                    elif 'mile' in unit or unit == 'mi': distance_km = val * 1.609
-                    else: distance_km = val
-                except: pass
+    result = {
+        "Business Name": "",
+        "Rating": "",
+        "Number of Reviews": "",
+        "Phone Number": "",
+        "Address": "",
+        "Website": "",
+        "Google Maps URL": url,
+    }
 
-            # Phone - Deep extraction from panel
-            phone = "N/A"
-            # Look for phone icon/label or specific format
-            phone_pattern = r"(\+?\d{1,3}[\s.-]?)?\(?\d{2,3}\)?[\s.-]?\d{3,4}[\s.-]?\d{4}"
-            phone_match = re.search(phone_pattern, text_content)
-            if phone_match:
-                phone = phone_match.group(0)
+    if not lines:
+        return result
 
-            # Website - Detailed extraction
-            website = "None"
-            try:
-                # Websites are often in links with aria-label containing "Website"
-                web_loc = element.locator('a[aria-label*="Website"]').first
-                if await web_loc.is_visible(timeout=500):
-                    website = await web_loc.get_attribute("href") or "None"
-                # Alternative: look for icons or specific data-value
-                elif await element.locator('a[data-value="Website"]').is_visible(timeout=200):
-                    website = await element.locator('a[data-value="Website"]').get_attribute("href") or "None"
-            except: pass
+    # First non-empty line is usually the business name
+    result["Business Name"] = lines[0]
 
-            # Address
-            address = "N/A"
-            # Address usually has a pin icon or specific format
-            for line in lines:
-                if any(char.isdigit() for char in line) and (',' in line or 'St' in line or 'Rd' in line):
-                    if len(line.split(',')) > 1:
-                        address = line
-                        break
+    for line in lines[1:]:
+        # Rating: looks like "4.5" or "4.5 stars"
+        rating_match = re.match(r"^(\d\.\d)\s*(stars?)?$", line, re.IGNORECASE)
+        if rating_match and not result["Rating"]:
+            result["Rating"] = rating_match.group(1)
+            continue
 
-            return {
-                "name": name,
-                "rating": rating,
-                "reviews": reviews,
-                "distance": distance,
-                "distance_km": distance_km,
-                "phone": phone,
-                "address": address,
-                "website": website,
-                "maps_url": f"https://www.google.com/maps/search/{name.replace(' ', '+')}",
-                "unverified": reviews == 0
-            }
-        except Exception as e:
-            # print(f"Parser error: {e}")
-            return None
+        # Reviews: looks like "(123)" or "123 reviews"
+        reviews_match = re.match(r"^\(?([\d,]+)\)?\s*(reviews?)?$", line, re.IGNORECASE)
+        if reviews_match and not result["Number of Reviews"]:
+            result["Number of Reviews"] = reviews_match.group(1).replace(",", "")
+            continue
+
+        # Phone number
+        phone_match = re.match(r"^[\+\d\s\(\)\-\.]{7,20}$", line)
+        if phone_match and not result["Phone Number"]:
+            result["Phone Number"] = line
+            continue
+
+        # Website
+        if re.match(r"^(www\.|http)", line, re.IGNORECASE) and not result["Website"]:
+            result["Website"] = line
+            continue
+
+        # Address: heuristic — contains digits and common address words
+        address_keywords = ["st", "ave", "blvd", "rd", "dr", "ln", "way", "tx", "ca", "ny", "fl"]
+        line_lower = line.lower()
+        if (
+            not result["Address"]
+            and any(kw in line_lower for kw in address_keywords)
+            and re.search(r"\d", line)
+        ):
+            result["Address"] = line
+            continue
+
+    return result
+
+
+def clean_reviews(value: str) -> Optional[int]:
+    """Convert review string to integer."""
+    try:
+        return int(value.replace(",", "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def clean_rating(value: str) -> Optional[float]:
+    """Convert rating string to float."""
+    try:
+        return float(value.strip())
+    except (ValueError, AttributeError):
+        return None

@@ -1,7 +1,8 @@
 {
-    "search_url": "https://www.google.com/maps",
-    "headless": false,
-    "max_results": 20,
-    "wait_time": 2,
-    "scroll_attempts": 5
+  "rate_limit_delay": 0.8,
+  "scroll_pause": 1.2,
+  "max_scroll_attempts": 30,
+  "headless": false,
+  "timeout": 30000,
+  "output_file": "leads.csv"
 }
