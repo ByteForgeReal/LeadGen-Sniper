@@ -4,7 +4,7 @@ from typing import List, Dict
 
 class Exporter:
     @staticmethod
-    def to_csv(data: List[Dict], filename: str = "leads.csv"):
+    def to_csv(data: List[Dict], filename: str = "data/leads.csv"):
         """
         Exports list of dictionaries to a CSV file using Pandas.
         """
@@ -12,18 +12,20 @@ class Exporter:
             print("[!] No data to export.")
             return
             
+        Exporter.ensure_dir(filename)
         df = pd.DataFrame(data)
         df.to_csv(filename, index=False)
         print(f"[√] Successfully exported {len(data)} leads to {filename}")
 
     @staticmethod
-    def to_json(data: List[Dict], filename: str = "leads.json"):
+    def to_json(data: List[Dict], filename: str = "data/leads.json"):
         """
         Exports list of dictionaries to a JSON file.
         """
         if not data:
             return
             
+        Exporter.ensure_dir(filename)
         df = pd.DataFrame(data)
         df.to_json(filename, orient="records", indent=4)
         print(f"[√] Successfully exported {len(data)} leads to {filename}")

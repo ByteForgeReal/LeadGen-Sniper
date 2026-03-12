@@ -111,8 +111,15 @@ def display_leads(leads, sort_by="balanced"):
     elif sort_by == "distance":
         sorted_leads = sorted(leads, key=lambda x: x.get('distance_km', 999.0))
     else: # balanced
-        # Simple balanced score: Rating * log(Reviews+1) - (Distance Penalty)
-        sorted_leads = sorted(leads, key=lambda x: (x.get('rating', 0) * math.log10(x.get('reviews', 0)+1)) - (min(x.get('distance_km', 999)/2, 5)), reverse=True)
+        # Balanced score: 
+        # (Rating * log10(Reviews + 1)) 
+        # + (5 if website exists else 0) 
+        # - (Distance Penalty)
+        sorted_leads = sorted(leads, key=lambda x: (
+            (x.get('rating', 0) * math.log10(x.get('reviews', 0) + 1)) + 
+            (5 if x.get('website') != "None" else 0) - 
+            (min(x.get('distance_km', 999) / 2, 8))
+        ), reverse=True)
 
     table = Table(title=f"ByteForge Intelligence: [bold green]{len(leads)} High-Value Leads[/bold green]", box=None)
     table.add_column("Business Name", style="cyan", width=35)
