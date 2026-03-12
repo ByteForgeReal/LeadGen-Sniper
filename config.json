@@ -1,0 +1,7 @@
+{
+    "search_url": "https://www.google.com/maps",
+    "headless": false,
+    "max_results": 20,
+    "wait_time": 2,
+    "scroll_attempts": 5
+}
