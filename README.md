@@ -9,12 +9,14 @@
 LeadGen-Sniper V3 moves beyond simple scraping to provide **Deep Business Intelligence**. It doesn't just find names; it audits businesses to find your next payout.
 
 ### 💎 Key Features
-- **Deep Crawl™ Technology**: Automatically clicks into every listing to extract "hidden" phone numbers and websites missed by standard search results.
-- **Website Health Auditor**: Highlighting business values in real-time. Leads missing websites are flagged in **[bold red]RED[/bold red]**—your primary targets for web dev services.
+- **Deep Crawl™ Technology**: Mult-selector engine that resolves issues with Google Maps UI updates and handles headless browser transitions.
+- **Website Health Auditor**: Highlighting business value in real-time. Leads missing websites are flagged—your primary targets for web dev services.
 - **SEO Intelligence Check**: Built-in website audit detects broken URLs, mobile-unfriendliness, and SEO gaps.
 - **C++ Enrichment Engine**: High-speed secondary worker (with Python fallback) for parallel data verification and health checks.
-- **Negative Keyword Filter**: Automatic exclusion of "False Positives" like schools, academies, and universities.
-- **Cold Pitch Generator**: AI-powered outreach tailored specifically to the lead's unique technical audit.
+- **Localization Intelligence**: Automatic detection of non-English leads (e.g., Hebrew) with manual review flags for outreach accuracy.
+- **Honest Metrics**: Clear reporting when search criteria yield fewer results than requested.
+- **Negative Keyword Filter**: Automatic exclusion of false positives like schools and universities.
+- **Balanced Sorting**: Intelligent ranking based on rating, review volume, distance, and digital presence.
 
 ## 🛠️ Tech Stack
 - **Engine**: Python 3.11+, Playwright (Chromium)

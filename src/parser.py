@@ -18,7 +18,11 @@ class DataParser:
                 # Panel headers often use h1 or specific font size
                 header = element.locator('h1').first
                 if await header.is_visible(timeout=500):
-                    name = await header.inner_text()
+                    extracted_name = await header.inner_text()
+                    # Skip common "Results" headers in different languages
+                    if extracted_name.strip() in ["Results", "תוצאות", "Showing results"]:
+                        return None
+                    name = extracted_name
             except:
                 pass
 

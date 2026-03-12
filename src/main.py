@@ -81,25 +81,32 @@ def run_enrichment_worker(leads):
     
     return leads
 
+import unicodedata
+
 def generate_pitch(lead):
     """Generates a cold email pitch based on the lead's enriched data."""
     name = lead['name']
     has_website = lead['website'] != "None"
     seo_issue = lead.get('seo_issue', "")
     
+    # Check for Hebrew characters
+    is_hebrew = any(unicodedata.name(char, "").startswith("HEBREW") for char in name)
+    
+    review_status = ""
+    if is_hebrew:
+        review_status = "[bold yellow][!] FLAG: HEBREW NAME DETECTED - MANUAL REVIEW RECOMMENDED[/bold yellow]\n"
+
     if not has_website:
-        return f"""
-Subject: Help with your online presence - {name}
-
-Hi there, I noticed {name} doesn't have a website yet. In today's market, you're losing customers to competitors who do. I build professional sites that win clients. Can we chat?
-"""
+        header = f"Subject: Help with your online presence - {name}"
+        body = f"Hi there, I noticed {name} doesn't have a website yet. In today's market, you're losing customers to competitors who do. I build professional sites that win clients. Can we chat?"
     elif seo_issue:
-        return f"""
-Subject: Fixing {name}'s Website Issues
+        header = f"Subject: Fixing {name}'s Website Issues"
+        body = f"Hi there, I noticed your website has some tech issues ({seo_issue}). This hurts your Google ranking. I'm a dev who specializes in fixing these exact problems. Open to a 5-min talk?"
+    else:
+        header = f"Subject: Scaling {name}'s growth"
+        body = f"Hi, I love your brand! I'd love to help you scale your digital presence. Can we talk?"
 
-Hi there, I noticed your website has some tech issues ({seo_issue}). This hurts your Google ranking. I'm a dev who specializes in fixing these exact problems. Open to a 5-min talk?
-"""
-    return f"Subject: Scaling {name}'s growth\nHi, I love your brand! I'd love to help you scale your digital presence. Can we talk?"
+    return f"{review_status}{header}\n\n{body}"
 
 def display_leads(leads, sort_by="balanced"):
     """Displays leads in a beautiful table with high-intel indicators."""
@@ -168,6 +175,10 @@ def main(niche, location, max_results):
     leads = asyncio.run(scraper.scrape_locations(niche, location, max_results))
     
     if leads:
+        if len(leads) < max_results:
+            console.print(f"[*] Search complete: Only [bold yellow]{len(leads)}[/bold yellow] leads found matching criteria.")
+        else:
+            console.print(f"[√] Found [bold green]{len(leads)}[/bold green] leads.")
         # 1. Negative Keyword Filtering
         leads, removed = filter_negative_leads(leads)
         if removed > 0:

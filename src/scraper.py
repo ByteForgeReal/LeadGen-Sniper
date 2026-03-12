@@ -80,26 +80,67 @@ class MapsScraper:
                         break
                 
                 if not search_box:
-                    raise Exception("Could not find search box even after waiting.")
+                    print("[!] Waiting for search box...")
+                    await asyncio.sleep(2)
+                    # Last ditch effort
+                    search_box = page.locator('input[id="searchboxinput"]')
 
-                await search_box.fill(search_query)
-                await page.keyboard.press("Enter")
+                if await search_box.is_visible():
+                    await search_box.fill(search_query)
+                    await page.keyboard.press("Enter")
+                    print(f"[*] Search submitted. Waiting for results...")
+                else:
+                    raise Exception("Search box exists but is not interactable.")
                 
-                # Wait for feed
-                await page.wait_for_selector('div[role="feed"]', timeout=45000)
+                # Wait for results to appear (try multiple common result selectors)
+                result_selectors = ['div[role="article"]', 'a.hfpxzc', 'div[role="feed"]']
+                found_results = False
+                
+                print("[*] Waiting for results list to load...")
+                for selector in result_selectors:
+                    try:
+                        await page.wait_for_selector(selector, timeout=10000)
+                        found_results = True
+                        break
+                    except:
+                        continue
+                
+                if not found_results:
+                    print("[!] No results list found. Attempting a short scroll to trigger load...")
+                    await page.mouse.wheel(0, 1000)
+                    await asyncio.sleep(2)
+
+                # Identify listing elements (using multiple common selectors for robustness)
+                selectors_listing = ['div[role="article"]', 'a.hfpxzc', 'div.m67q60', 'div[aria-label^="Results for"]']
                 
                 with Progress() as progress:
                     task = progress.add_task("[cyan]High-Intel Scraping...", total=max_results)
                     
-                    while len(results) < max_results:
+                    retry_count = 0
+                    while len(results) < max_results and retry_count < 5:
                         await self._scroll_feed(page)
-                        listing_elements = await page.locator('div[role="article"]').all()
                         
+                        listing_elements = []
+                        for sel in selectors_listing:
+                            listing_elements = await page.locator(sel).all()
+                            if listing_elements: break
+                        
+                        if not listing_elements:
+                            retry_count += 1
+                            await asyncio.sleep(1)
+                            continue
+
                         initial_count = len(results)
                         for el in listing_elements:
                             if len(results) >= max_results: break
                                 
+                            # Extract name for deduplication
                             name = await el.get_attribute("aria-label")
+                            if not name:
+                                # Try link text if aria-label is missing
+                                name = await el.inner_text()
+                                if "\n" in name: name = name.split("\n")[0]
+                            
                             if name and name not in seen_names:
                                 # DEEP CRAWL: Click listing to see details
                                 try:
@@ -107,19 +148,22 @@ class MapsScraper:
                                     await asyncio.sleep(1.5) # Wait for panel slide-in
                                     
                                     # Parse from the detailed side panel
-                                    # Detailed panel is usually div[role="main"] or has specific aria-label
                                     side_panel = page.locator('div[role="main"]').first
                                     data = await DataParser.parse_listing(side_panel)
                                     
                                     if data:
-                                        # Use the name from listing if panel name fails
-                                        if data['name'] == "N/A": data['name'] = name
+                                        # Use the name from listing if panel name fails or is "N/A"
+                                        if data.get('name') == "N/A": 
+                                            data['name'] = name
                                         
-                                        # Deduplicate
+                                        # Deduplicate again with cleaned name
                                         if data['name'] not in seen_names:
                                             results.append(data)
                                             seen_names.add(data['name'])
                                             progress.update(task, advance=1)
+                                    else:
+                                        # If side panel parse fails (maybe "Results" header), skip it
+                                        seen_names.add(name)
                                 except Exception as e:
                                     # Fallback if click fails
                                     data = await DataParser.parse_listing(el)
