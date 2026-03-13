@@ -12,12 +12,16 @@
   <a href="https://www.youtube.com/channel/UCC05rPMVdEhh6FCG126M6jg">
     <img src="https://img.shields.io/badge/YouTube-ByteForge-FF0000?style=for-the-badge&logo=youtube&logoColor=white"/>
   </a>
+  <a href="https://github.com/ByteForgeReal/LeadGen-Sniper/releases">
+    <img src="https://img.shields.io/badge/Download-.EXE-brightgreen?style=for-the-badge&logo=windows&logoColor=white" alt="Download EXE"/>
+  </a><br/><br/>
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
   <img src="https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&logo=playwright&logoColor=white"/>
   <img src="https://img.shields.io/badge/Pandas-Data%20Engine-150458?style=for-the-badge&logo=pandas&logoColor=white"/>
   <img src="https://img.shields.io/badge/Rich-Terminal%20UI-ff69b4?style=for-the-badge"/>
 
 </div>
+
 
 ---
 
