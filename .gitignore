@@ -3,3 +3,6 @@ __pycache__/
 data/*.csv
 .env
 .vscode/
+build/
+dist/
+*.spec

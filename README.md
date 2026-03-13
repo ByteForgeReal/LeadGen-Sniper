@@ -27,7 +27,11 @@ LeadGen Sniper turns Google Maps into a structured lead database in minutes. It 
 
 Perfect for identifying high-value acquisition targets for web development, SEO services, and B2B sales.
 
+<<<<<<< HEAD
 ```
+=======
+```text
+>>>>>>> aa128fb (Professional Update: Enhanced README and stabilized source structure)
 🔧 Business niche: mechanic
 📍 Location: Austin Texas  
 📊 Max results: 50
@@ -59,7 +63,11 @@ Extracting (50/50)... ████████████ 100%
 
 ## 📁 Project Structure
 
+<<<<<<< HEAD
 ```
+=======
+```text
+>>>>>>> aa128fb (Professional Update: Enhanced README and stabilized source structure)
 LeadGen-Sniper/
 │
 ├── src/
@@ -104,7 +112,11 @@ python src/main.py
 
 No flags. No config editing needed. Answer three prompts and go:
 
+<<<<<<< HEAD
 ```
+=======
+```text
+>>>>>>> aa128fb (Professional Update: Enhanced README and stabilized source structure)
 🔧 Business niche (mechanic): plumber
 📍 Location (Austin Texas): New York City
 📊 Max results (20): 100
